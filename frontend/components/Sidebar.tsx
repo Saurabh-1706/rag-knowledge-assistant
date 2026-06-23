@@ -51,6 +51,12 @@ export default function Sidebar() {
       icon: Folder,
       description: 'Upload & manage files',
     },
+    {
+      name: 'Evaluation Panel',
+      href: '/eval',
+      icon: Activity,
+      description: 'Automated performance testing',
+    },
   ];
 
   return (

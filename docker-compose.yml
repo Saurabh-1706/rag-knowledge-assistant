@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    volumes:
+      # Mount DB for persistent Chroma storage
+      - ./backend/db:/app/db
+      # Mount docs folder for persistent physical documents
+      - ./backend/docs:/app/docs
+    env_file:
+      - ./backend/.env
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - COHERE_API_KEY=${COHERE_API_KEY}
+      - PERSIST_DIRECTORY=/app/db/chroma_db
+      - DOCS_DIRECTORY=/app/docs
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8002
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

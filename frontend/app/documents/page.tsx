@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { UploadCloud, FileText, Trash2, Database, AlertCircle, RefreshCw, Layers, CheckCircle } from 'lucide-react';
-import { getDocuments, uploadDocument, deleteDocument, DocumentInfo } from '@/lib/api';
+import { UploadCloud, FileText, Trash2, Database, AlertCircle, RefreshCw, Layers, CheckCircle, Globe } from 'lucide-react';
+import { getDocuments, uploadDocument, ingestUrl, deleteDocument, DocumentInfo } from '@/lib/api';
 
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
@@ -11,6 +11,35 @@ export default function DocumentsPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'upload' | 'url'>('upload');
+  const [urlValue, setUrlValue] = useState('');
+  const [jobStatusText, setJobStatusText] = useState<string | null>(null);
+
+  const pollJobStatus = async (jobId: string): Promise<number> => {
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    return new Promise((resolve, reject) => {
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch(`${API_URL}/api/documents/status/${jobId}`);
+          if (!res.ok) throw new Error('Failed to fetch job status');
+          const data = await res.json();
+          
+          if (data.status === 'completed') {
+            clearInterval(interval);
+            resolve(data.chunks_created);
+          } else if (data.status === 'failed') {
+            clearInterval(interval);
+            reject(new Error(data.error || 'Ingestion failed'));
+          } else {
+            setJobStatusText(`Processing: ${data.chunks_created} chunks embedded so far...`);
+          }
+        } catch (err) {
+          clearInterval(interval);
+          reject(err);
+        }
+      }, 2000);
+    });
+  };
 
   const fetchDocs = useCallback(async () => {
     setIsLoading(true);
@@ -41,7 +70,13 @@ export default function DocumentsPage() {
 
     try {
       const response = await uploadDocument(file);
-      setSuccessMsg(`Successfully uploaded "${response.doc_name}" creating ${response.chunks_created} chunks.`);
+      if (response.job_id) {
+        setJobStatusText('File uploaded. Running chunking and embedding in background...');
+        const chunks = await pollJobStatus(response.job_id);
+        setSuccessMsg(`Successfully ingested "${response.doc_name}" creating ${chunks} chunks.`);
+      } else {
+        setSuccessMsg(`Successfully uploaded "${response.doc_name}" creating ${response.chunks_created} chunks.`);
+      }
       await fetchDocs();
     } catch (err: unknown) {
       console.error(err);
@@ -49,6 +84,7 @@ export default function DocumentsPage() {
       setError(errMsg);
     } finally {
       setIsUploading(false);
+      setJobStatusText(null);
     }
   }, [fetchDocs]);
 
@@ -75,6 +111,37 @@ export default function DocumentsPage() {
       console.error(err);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
       setError(`Failed to delete "${name}": ${errMsg}`);
+    }
+  };
+
+  // Handle URL Ingestion Submit
+  const handleUrlSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!urlValue.trim() || isUploading) return;
+
+    setIsUploading(true);
+    setError(null);
+    setSuccessMsg(null);
+
+    const url = urlValue.trim();
+    try {
+      const response = await ingestUrl(url);
+      if (response.job_id) {
+        setJobStatusText('URL registered. Scraping and embedding page text in background...');
+        const chunks = await pollJobStatus(response.job_id);
+        setSuccessMsg(`Successfully ingested webpage: "${response.doc_name}" creating ${chunks} chunks.`);
+      } else {
+        setSuccessMsg(`Successfully ingested webpage: "${response.doc_name}" creating ${response.chunks_created} chunks.`);
+      }
+      setUrlValue('');
+      await fetchDocs();
+    } catch (err: unknown) {
+      console.error(err);
+      const errMsg = err instanceof Error ? err.message : 'Unknown error';
+      setError(`Failed to ingest URL: ${errMsg}`);
+    } finally {
+      setIsUploading(false);
+      setJobStatusText(null);
     }
   };
 
@@ -124,36 +191,112 @@ export default function DocumentsPage() {
           </div>
         )}
 
-        {/* Drop Zone Box */}
-        <div
-          {...getRootProps()}
-          className={`border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-300 relative overflow-hidden ${
-            isDragActive
-              ? 'border-blue-500 bg-blue-500/5 shadow-lg shadow-blue-500/5'
-              : 'border-[#1F2937] bg-[#111827]/30 hover:border-[#3B82F6]/40 hover:bg-[#111827]/50'
-          }`}
-        >
-          <input {...getInputProps()} />
-          <div className="p-4 bg-[#1E293B]/70 rounded-2xl mb-4 border border-[#1F2937] shadow-inner group-hover:scale-105 transition-transform duration-300">
-            <UploadCloud className={`w-8 h-8 text-gray-400 ${isUploading ? 'animate-bounce' : ''}`} />
-          </div>
-          
-          <div className="space-y-1.5">
-            <p className="text-sm font-semibold text-white tracking-wide">
-              {isUploading ? 'Ingesting document...' : 'Drag and drop your file here'}
-            </p>
-            <p className="text-xs text-gray-500">
-              Supports <strong className="text-gray-400">.txt</strong> and <strong className="text-gray-400">.pdf</strong> files
-            </p>
-          </div>
-
-          {isUploading && (
-            <div className="absolute inset-0 bg-[#080C14]/70 backdrop-blur-sm flex flex-col items-center justify-center space-y-3">
-              <div className="w-10 h-10 border-t-2 border-r-2 border-blue-500 rounded-full animate-spin" />
-              <p className="text-xs font-semibold text-blue-400 animate-pulse">Running chunking & embedding...</p>
-            </div>
-          )}
+        {/* Tabs switcher */}
+        <div className="flex border-b border-[#1F2937]/30 gap-6">
+          <button
+            onClick={() => { setActiveTab('upload'); setError(null); setSuccessMsg(null); }}
+            className={`pb-3 text-sm font-semibold border-b-2 transition-all ${
+              activeTab === 'upload'
+                ? 'border-blue-500 text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            File Upload
+          </button>
+          <button
+            onClick={() => { setActiveTab('url'); setError(null); setSuccessMsg(null); }}
+            className={`pb-3 text-sm font-semibold border-b-2 transition-all ${
+              activeTab === 'url'
+                ? 'border-blue-500 text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            URL Ingestion
+          </button>
         </div>
+
+        {activeTab === 'upload' ? (
+          /* Drop Zone Box */
+          <div
+            {...getRootProps()}
+            className={`border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-300 relative overflow-hidden ${
+              isDragActive
+                ? 'border-blue-500 bg-blue-500/5 shadow-lg shadow-blue-500/5'
+                : 'border-[#1F2937] bg-[#111827]/30 hover:border-[#3B82F6]/40 hover:bg-[#111827]/50'
+            }`}
+          >
+            <input {...getInputProps()} />
+            <div className="p-4 bg-[#1E293B]/70 rounded-2xl mb-4 border border-[#1F2937] shadow-inner group-hover:scale-105 transition-transform duration-300">
+              <UploadCloud className={`w-8 h-8 text-gray-400 ${isUploading ? 'animate-bounce' : ''}`} />
+            </div>
+            
+            <div className="space-y-1.5">
+              <p className="text-sm font-semibold text-white tracking-wide">
+                {isUploading ? 'Ingesting document...' : 'Drag and drop your file here'}
+              </p>
+              <p className="text-xs text-gray-500">
+                Supports <strong className="text-gray-400">.txt</strong> and <strong className="text-gray-400">.pdf</strong> files
+              </p>
+            </div>
+
+            {isUploading && (
+              <div className="absolute inset-0 bg-[#080C14]/70 backdrop-blur-sm flex flex-col items-center justify-center space-y-3">
+                <div className="w-10 h-10 border-t-2 border-r-2 border-blue-500 rounded-full animate-spin" />
+                <p className="text-xs font-semibold text-blue-400 animate-pulse">
+                  {jobStatusText || 'Running chunking & embedding...'}
+                </p>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* URL Input Form */
+          <form onSubmit={handleUrlSubmit} className="bg-[#111827]/30 border border-[#1F2937]/50 rounded-2xl p-8 space-y-4">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="url-input" className="text-sm font-semibold text-white tracking-wide">
+                Ingest Content from URL
+              </label>
+              <p className="text-xs text-gray-500">
+                Provide a webpage URL (e.g. Wikipedia article, blog post, documentation) to extract and chunk its text.
+              </p>
+            </div>
+            
+            <div className="flex gap-3">
+              <div className="flex-1 bg-[#111827] border border-[#1F2937]/50 rounded-xl px-4 py-2.5 focus-within:border-blue-500/50 focus-within:ring-1 focus-within:ring-blue-500/50 transition-all duration-300 shadow-inner flex items-center gap-3">
+                <Globe className="w-5 h-5 text-gray-500" />
+                <input
+                  id="url-input"
+                  type="url"
+                  required
+                  value={urlValue}
+                  onChange={(e) => setUrlValue(e.target.value)}
+                  placeholder="https://en.wikipedia.org/wiki/Artificial_intelligence"
+                  className="flex-1 bg-transparent outline-none border-none text-sm text-gray-100 placeholder-gray-600"
+                />
+              </div>
+              
+              <button
+                type="submit"
+                disabled={!urlValue.trim() || isUploading}
+                className={`px-6 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 ${
+                  urlValue.trim() && !isUploading
+                    ? 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white shadow-md shadow-blue-500/20 hover:scale-105'
+                    : 'bg-[#1F2937]/30 text-gray-600 border border-[#1F2937]/50'
+                }`}
+              >
+                Ingest URL
+              </button>
+            </div>
+
+            {isUploading && (
+              <div className="flex items-center gap-3 text-xs text-blue-400 font-semibold pt-2">
+                <div className="w-4 h-4 border-t-2 border-r-2 border-blue-500 rounded-full animate-spin" />
+                <span className="animate-pulse">
+                  {jobStatusText || 'Scraping page text, chunking & embedding...'}
+                </span>
+              </div>
+            )}
+          </form>
+        )}
 
         {/* Ingested Documents List */}
         <div className="space-y-4">

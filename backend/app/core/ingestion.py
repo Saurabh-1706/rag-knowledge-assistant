@@ -1,10 +1,49 @@
 import os
+import re
 import tempfile
-from typing import List
+from typing import List, Tuple
+import httpx
+from bs4 import BeautifulSoup
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader
+from app import config
 from app.core.vector_store import get_vector_store
 from app.core.chunking import split_text_into_chunks
+
+def url_to_filename(url: str) -> str:
+    """Convert URL into a clean, safe filename"""
+    # Remove protocol and www
+    name = re.sub(r"^https?://(www\.)?", "", url)
+    # Replace non-alphanumeric characters with underscores
+    name = re.sub(r"[^a-zA-Z0-9\-_.]", "_", name)
+    # Limit length
+    name = name[:60]
+    return f"url_{name}.txt"
+
+def scrape_url_text(url: str) -> Tuple[str, str]:
+    """Fetch URL and extract clean text content. Returns (title, text)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    response = httpx.get(url, headers=headers, follow_redirects=True, timeout=15.0)
+    response.raise_for_status()
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    
+    # Remove unwanted scripts and tags
+    for element in soup(["script", "style", "meta", "noscript", "header", "footer", "nav", "aside"]):
+        element.extract()
+        
+    title = soup.title.string.strip() if soup.title and soup.title.string else url
+    
+    chunks = []
+    # Collect readable texts from standard text blocks
+    for elem in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "li"]):
+        text = elem.get_text().strip()
+        if text:
+            chunks.append(text)
+            
+    return title, "\n\n".join(chunks)
 
 def load_pdf_text(file_bytes: bytes, file_name: str) -> List[Document]:
     """Write PDF bytes to a temp file and load it using PyPDFLoader"""
@@ -47,3 +86,23 @@ def ingest_document(file_name: str, file_content: bytes) -> int:
         vector_store.add_documents(chunks)
         
     return len(chunks)
+
+def ingest_from_url(url: str) -> Tuple[str, int]:
+    """Scrape web page text, save to docs directory as a text file, and ingest into Chroma DB"""
+    title, text = scrape_url_text(url)
+    
+    filename = url_to_filename(url)
+    
+    # Save the file physically in the docs directory
+    docs_dir = config.DOCS_DIR
+    os.makedirs(docs_dir, exist_ok=True)
+    filepath = os.path.join(docs_dir, filename)
+    
+    content_bytes = text.encode("utf-8")
+    with open(filepath, "wb") as f:
+        f.write(content_bytes)
+        
+    # Ingest document
+    chunks_created = ingest_document(filename, content_bytes)
+    return filename, chunks_created
+

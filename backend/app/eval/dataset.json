@@ -1,0 +1,52 @@
+[
+  {
+    "question": "When was Google founded and by whom?",
+    "ground_truth": "Google was founded on September 4, 1998, by Larry Page and Sergey Brin while they were PhD students at Stanford University.",
+    "source": "Google.txt"
+  },
+  {
+    "question": "What was Google's initial public offering (IPO) price and date?",
+    "ground_truth": "Google's initial public offering (IPO) took place on August 19, 2004, at a price of $85 per share.",
+    "source": "Google.txt"
+  },
+  {
+    "question": "Who founded Microsoft and when?",
+    "ground_truth": "Microsoft was founded by Bill Gates and Paul Allen on April 4, 1975.",
+    "source": "Microsoft.txt"
+  },
+  {
+    "question": "What was Microsoft's Windows 95 launch date?",
+    "ground_truth": "Microsoft released Windows 95 on August 24, 1995.",
+    "source": "Microsoft.txt"
+  },
+  {
+    "question": "Who are the founders of NVIDIA?",
+    "ground_truth": "NVIDIA was founded by Jensen Huang, Chris Malachowsky, and Curtis Priem in April 1993.",
+    "source": "Nvidia.txt"
+  },
+  {
+    "question": "When did NVIDIA introduce the GeForce 256 and how did they market it?",
+    "ground_truth": "NVIDIA introduced the GeForce 256 in 1999 and marketed it as the world's first GPU.",
+    "source": "Nvidia.txt"
+  },
+  {
+    "question": "When was SpaceX founded and what was its goal?",
+    "ground_truth": "SpaceX was founded in 2002 by Elon Musk with the goal of reducing space transportation costs to enable the colonization of Mars.",
+    "source": "SpaceX.txt"
+  },
+  {
+    "question": "What was the first private liquid-propellant rocket to reach orbit, and who developed it?",
+    "ground_truth": "Falcon 1, developed by SpaceX, was the first private liquid-propellant rocket to reach orbit in 2008.",
+    "source": "SpaceX.txt"
+  },
+  {
+    "question": "When was Tesla founded and who were the original founders?",
+    "ground_truth": "Tesla was incorporated in July 2003 by Martin Eberhard and Marc Tarpenning.",
+    "source": "Tesla.txt"
+  },
+  {
+    "question": "What is the core architecture introduced in the 'Attention Is All You Need' paper?",
+    "ground_truth": "The paper introduces the Transformer architecture, which relies solely on self-attention mechanisms to draw global dependencies between input and output, eschewing recurrence and convolutions.",
+    "source": "attention-is-all-you-need.pdf"
+  }
+]

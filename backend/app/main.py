@@ -1,14 +1,26 @@
 import os
 import shutil
-from typing import List
-from fastapi import FastAPI, UploadFile, File, HTTPException, Path
+import uuid
+import asyncio
+from typing import List, Dict, Any
+from fastapi import FastAPI, UploadFile, File, HTTPException, Path, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from app import config
 from app.core.vector_store import get_vector_store
-from app.core.chat import generate_chat_response
-from app.core.ingestion import ingest_document
-from app.core.retrieval import get_all_documents
-from app.api.models import ChatRequest, ChatResponse, DocumentInfo, UploadResponse
+from app.core.chat import generate_chat_response, generate_chat_response_stream
+from app.core.ingestion import ingest_document, ingest_from_url
+from app.core.retrieval import get_all_documents, retrieve_documents
+from app.api.models import (
+    ChatRequest, 
+    ChatResponse, 
+    DocumentInfo, 
+    UploadResponse, 
+    URLIngestRequest, 
+    JobStatusResponse, 
+    EvalRequest
+)
+from app.core.evaluator import run_evaluation_pipeline, get_evaluation_history
 
 app = FastAPI(
     title="RAG Knowledge Assistant API",
@@ -126,9 +138,32 @@ def get_documents_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+JOBS: Dict[str, Dict[str, Any]] = {}
+
+def run_ingest_document_bg(job_id: str, filename: str, content: bytes):
+    try:
+        chunks = ingest_document(filename, content)
+        JOBS[job_id]["status"] = "completed"
+        JOBS[job_id]["chunks_created"] = chunks
+    except Exception as e:
+        print(f"Error in bg ingestion: {e}")
+        JOBS[job_id]["status"] = "failed"
+        JOBS[job_id]["error"] = str(e)
+
+def run_ingest_url_bg(job_id: str, url: str):
+    try:
+        filename, chunks = ingest_from_url(url)
+        JOBS[job_id]["status"] = "completed"
+        JOBS[job_id]["doc_name"] = filename
+        JOBS[job_id]["chunks_created"] = chunks
+    except Exception as e:
+        print(f"Error in bg URL ingestion: {e}")
+        JOBS[job_id]["status"] = "failed"
+        JOBS[job_id]["error"] = str(e)
+
 @app.post("/api/documents/upload", response_model=UploadResponse)
-async def upload_document_endpoint(file: UploadFile = File(...)):
-    """Upload a file, save it to the docs directory, and ingest it into ChromaDB"""
+async def upload_document_endpoint(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Upload a file, save it to the docs directory, and ingest it into ChromaDB in background"""
     try:
         filename = file.filename
         # Save file physically to docs directory
@@ -142,16 +177,39 @@ async def upload_document_endpoint(file: UploadFile = File(...)):
         with open(filepath, "wb") as f:
             f.write(content)
             
-        # Ingest file into vector store
-        chunks_created = ingest_document(filename, content)
+        job_id = str(uuid.uuid4())
+        JOBS[job_id] = {
+            "status": "processing",
+            "doc_name": filename,
+            "chunks_created": 0,
+            "error": None
+        }
+        
+        background_tasks.add_task(run_ingest_document_bg, job_id, filename, content)
         
         return UploadResponse(
             success=True,
-            chunks_created=chunks_created,
-            doc_name=filename
+            chunks_created=0,
+            doc_name=filename,
+            job_id=job_id,
+            status="processing"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/documents/status/{job_id}", response_model=JobStatusResponse)
+def get_job_status_endpoint(job_id: str = Path(..., description="The ID of the background ingestion job")):
+    """Get the status of a background document ingestion job"""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    return JobStatusResponse(
+        job_id=job_id,
+        status=job["status"],
+        doc_name=job["doc_name"],
+        chunks_created=job["chunks_created"],
+        error=job["error"]
+    )
 
 @app.delete("/api/documents/{name}")
 def delete_document_endpoint(name: str = Path(..., description="The name of the document to delete")):
@@ -195,5 +253,124 @@ def delete_document_endpoint(name: str = Path(..., description="The name of the 
                 print(f"Error in fallback metadata search/deletion: {e}")
                 
         return {"success": True, "chunks_deleted": deleted_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat/stream")
+def chat_stream_endpoint(request: ChatRequest):
+    """Q&A streaming endpoint returning Event-Stream chunks"""
+    try:
+        # Convert request history to list of dicts
+        history_dicts = []
+        for msg in request.history:
+            history_dicts.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+            
+        generator = generate_chat_response_stream(
+            message=request.message,
+            history=history_dicts,
+            retrieval_mode=request.retrieval_mode
+        )
+        return StreamingResponse(generator, media_type="text/event-stream")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/documents/url", response_model=UploadResponse)
+def upload_url_endpoint(request: URLIngestRequest, background_tasks: BackgroundTasks):
+    """Scrape a URL and ingest its content asynchronously in background"""
+    try:
+        from app.core.ingestion import url_to_filename
+        filename = url_to_filename(request.url)
+        
+        job_id = str(uuid.uuid4())
+        JOBS[job_id] = {
+            "status": "processing",
+            "doc_name": filename,
+            "chunks_created": 0,
+            "error": None
+        }
+        
+        background_tasks.add_task(run_ingest_url_bg, job_id, request.url)
+        
+        return UploadResponse(
+            success=True,
+            chunks_created=0,
+            doc_name=filename,
+            job_id=job_id,
+            status="processing"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/eval/run")
+def run_evaluation_endpoint(request: EvalRequest):
+    """Run RAG evaluation pipeline for a specific retrieval mode"""
+    try:
+        summary = run_evaluation_pipeline(request.retrieval_mode)
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/eval/history")
+def get_evaluation_history_endpoint():
+    """Retrieve history of all evaluation runs"""
+    try:
+        return get_evaluation_history()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/eval/run/{filename}")
+def get_evaluation_run_detail_endpoint(filename: str = Path(..., description="The filename of the run record")):
+    """Retrieve full details of a specific evaluation run"""
+    try:
+        # Prevent path traversal
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+            
+        import json
+        from app import config
+        base_dir = config.BASE_DIR
+        filepath = base_dir / "app" / "eval" / "runs" / filename
+        if not filepath.exists():
+            raise HTTPException(status_code=404, detail="Run report not found")
+            
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/compare")
+async def compare_modes_endpoint(request: ChatRequest):
+    """Retrieve context chunks for all four modes in parallel for comparison"""
+    try:
+        # Run retrieval in parallel for Vector, Hybrid, Rerank, and Multi-Query
+        async def run_retrieval(mode):
+            loop = asyncio.get_running_loop()
+            docs, notice = await loop.run_in_executor(
+                None, retrieve_documents, request.message, mode, 5
+            )
+            return {
+                "mode": mode,
+                "notice": notice,
+                "chunks": [
+                    {
+                        "content": doc.page_content,
+                        "source": doc.metadata.get("source", "unknown")
+                    }
+                    for doc in docs
+                ]
+            }
+        
+        modes = ["vector", "hybrid", "rerank", "multiquery"]
+        tasks = [run_retrieval(m) for m in modes]
+        results = await asyncio.gather(*tasks)
+        
+        # Format as key-value
+        return {res["mode"]: {"chunks": res["chunks"], "notice": res["notice"]} for res in results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

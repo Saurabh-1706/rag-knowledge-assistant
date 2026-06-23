@@ -20,3 +20,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Evaluation run logs
+backend/app/eval/runs/
